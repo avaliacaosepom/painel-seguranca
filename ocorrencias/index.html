@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Painel de Ocorrências em Equipamentos Municipais</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --navy:#0B1B4A; --azul:#005AA8; --texto:#1B2F63; --muted:#5B6F95; --erro:#C62828; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--navy); font-family:'Inter','Segoe UI',Arial,sans-serif; overflow:hidden; }
+
+  /* Palco 1280x720 escalado para caber na janela (igual ao "Ajustar à página" do Power BI) */
+  #viewport { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #stage { position:relative; width:1280px; height:720px; flex:none; transform-origin:center center;
+           background:#0B1B4A center/100% 100% no-repeat; }
+
+  .campo { position:absolute; left:770px; width:420px; height:48px; border:0; outline:0; background:transparent;
+           padding:0 16px 0 46px; font:500 15px 'Inter',sans-serif; color:var(--texto); }
+  #login { top:322px; } #senha { top:410px; }
+  .campo:focus { box-shadow:0 0 0 2px rgba(0,90,168,.45); border-radius:10px; background:rgba(255,255,255,.55); }
+
+  .btn { position:absolute; left:770px; width:420px; height:46px; border-radius:8px; font:700 14px 'Inter',sans-serif;
+         letter-spacing:.06em; cursor:pointer; text-transform:uppercase; }
+  #entrar { top:492px; height:50px; background:var(--azul); color:#fff; border:0; }
+  #entrar:hover { background:#00478a; } #entrar:disabled { opacity:.65; cursor:wait; }
+  #limpar { top:552px; height:36px; background:#fff; color:var(--azul); border:2px solid var(--azul); }
+  #msg { position:absolute; left:770px; top:600px; width:420px; min-height:20px; font:600 13px 'Inter',sans-serif; color:var(--erro); }
+
+  /* escolha de painel (usuário com acesso a ambos) */
+  #escolha { position:absolute; left:728px; top:285px; width:512px; height:355px; padding:30px 52px 0; background:#fff; display:none; }
+  #escolha h3 { margin:0 0 6px; font:700 20px 'Inter'; color:var(--texto); }
+  #escolha p { margin:0 0 18px; color:var(--muted); font-size:14px; }
+  #escolha button { display:block; width:100%; height:52px; margin-bottom:12px; border-radius:10px; border:2px solid var(--azul);
+                    background:#fff; color:var(--azul); font:700 15px 'Inter'; cursor:pointer; text-align:left; padding:0 18px; }
+  #escolha button:hover { background:var(--azul); color:#fff; }
+
+  /* painel incorporado */
+  #painel { position:fixed; inset:0; display:none; flex-direction:column; background:#fff; }
+  #barra { height:42px; flex:none; background:#0B1B4A; color:#fff; display:flex; align-items:center; gap:14px; padding:0 16px; font-size:13px; }
+  #barra b { font-weight:700; letter-spacing:.02em; } #barra .esp { flex:1; }
+  #barra .tit { color:#F5A31A; font-weight:700; letter-spacing:.08em; text-transform:uppercase; font-size:12px; }
+  #barra button { background:transparent; color:#fff; border:1px solid rgba(255,255,255,.55); border-radius:6px; padding:5px 14px; font:600 12px 'Inter'; cursor:pointer; }
+  #barra button:hover { background:rgba(255,255,255,.15); }
+  #frame { flex:1; border:0; width:100%; background:#F2F6FB; }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+    <div id="form">
+      <input id="login" class="campo" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" aria-label="Login">
+      <input id="senha" class="campo" type="password" autocomplete="current-password" aria-label="Senha">
+      <button id="entrar" class="btn" type="button">Entrar</button>
+      <button id="limpar" class="btn" type="button">Limpar campos</button>
+      <div id="msg" role="alert"></div>
+    </div>
+    <div id="escolha"></div>
+  </div>
+</div>
+
+<div id="painel">
+  <div id="barra">
+    <b>JOP</b><span class="tit" id="tituloPainel"></span><span class="esp"></span>
+    <span id="usuario"></span><button type="button" id="btnSair">Sair</button>
+  </div>
+  <iframe id="frame" allowfullscreen="true" title="Painel Power BI"></iframe>
+</div>
+
+<script>
+  var API = 'https://script.google.com/macros/s/AKfycbyxCI6HMBKEepPhN2TxllZEWUIb144FMfYG8d3qUOhe9Dnkw7nBYIOTLorsUXAQ3TA4Ow/exec';
+  var CFG = { fundo: 'login_fundo.jpg' };
+  var PAINEL = 'OCORRENCIAS'; // esta página abre somente o Painel de Ocorrências
+
+  // chamada ao servidor de login (Apps Script). text/plain evita a pré-verificação CORS.
+  function chamar(corpo, ok, falha) {
+    fetch(API, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(corpo) })
+      .then(function (r) { return r.json(); }).then(ok).catch(falha);
+  }
+  var UA = (navigator.userAgent || '').substring(0, 160);
+  var token = null, nome = '';
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- escala do palco
+  function ajustar() {
+    var s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    $('stage').style.transform = 'scale(' + s + ')';
+  }
+  window.addEventListener('resize', ajustar); ajustar();
+
+  // ---- imagens (Drive)
+  if (CFG.fundo) $('stage').style.backgroundImage = 'url("' + CFG.fundo + '")';
+  else $('stage').style.background = 'linear-gradient(90deg,#0B1B4A 0 54%,#fff 54% 100%)';
+
+  // ---- login
+  function msg(t) { $('msg').textContent = t || ''; }
+  function limpar() { $('login').value = ''; $('senha').value = ''; msg(''); $('login').focus(); }
+  $('limpar').onclick = limpar;
+  $('senha').addEventListener('keydown', function (e) { if (e.key === 'Enter') entrar(); });
+  $('login').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('senha').focus(); });
+  $('entrar').onclick = entrar;
+
+  function entrar() {
+    msg('');
+    var l = $('login').value, s = $('senha').value;
+    if (!l.trim() || !s) { msg('Informe login e senha.'); return; }
+    $('entrar').disabled = true; $('entrar').textContent = 'Verificando…';
+    chamar({ acao: 'autenticar', login: l, senha: s, ua: UA }, function (r) {
+        $('entrar').disabled = false; $('entrar').textContent = 'Entrar';
+        if (!r.ok) { msg(r.msg); $('senha').value = ''; $('senha').focus(); return; }
+        token = r.token; nome = r.nome;
+        var tem = r.paineis.some(function (p) { return p.id === PAINEL; });
+        if (tem) abrir(PAINEL);
+        else {
+          msg('Seu usuário não possui acesso a este painel.');
+          chamar({ acao: 'sair', token: token, ua: UA }, function () {}, function () {}); token = null;
+        }
+      }, function () {
+        $('entrar').disabled = false; $('entrar').textContent = 'Entrar';
+        msg('Falha de comunicação. Tente novamente.');
+      });
+  }
+
+  function escolher(lista) {
+    $('form').style.display = 'none';
+    var h = '<h3>Olá, ' + esc(nome.split(' ')[0]) + '</h3><p>Escolha o painel que deseja acessar:</p>';
+    lista.forEach(function (p) { h += '<button type="button" data-id="' + p.id + '">' + esc(p.rotulo) + '</button>'; });
+    $('escolha').innerHTML = h; $('escolha').style.display = 'block';
+    Array.prototype.forEach.call($('escolha').querySelectorAll('button'), function (b) { b.onclick = function () { abrir(b.getAttribute('data-id')); }; });
+  }
+
+  function abrir(id) {
+    chamar({ acao: 'abrirPainel', token: token, painel: id, ua: UA }, function (r) {
+        if (!r.ok) { msg(r.msg); $('form').style.display = 'block'; $('escolha').style.display = 'none'; return; }
+        $('tituloPainel').textContent = r.rotulo;
+        $('usuario').textContent = r.nome;
+        $('frame').src = r.url;
+        $('painel').style.display = 'flex';
+      }, function () { msg('Falha de comunicação. Tente novamente.'); });
+  }
+
+  $('btnSair').onclick = function () {
+    chamar({ acao: 'sair', token: token, ua: UA }, voltar, voltar);
+  };
+  function voltar() {
+    token = null; $('frame').src = 'about:blank'; $('painel').style.display = 'none';
+    $('escolha').style.display = 'none'; $('form').style.display = 'block'; limpar();
+  }
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  $('login').focus();
+</script>
+</body>
+</html>
